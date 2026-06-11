@@ -1,0 +1,90 @@
+name: Deploy Hugging Face Space
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      sync_upstream:
+        description: "Merge Resinat/Resin master before deploying"
+        required: true
+        default: true
+        type: boolean
+  schedule:
+    - cron: "0 20 * * 0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hf-space-deploy
+  cancel-in-progress: false
+
+env:
+  HF_SPACE_ID: ${{ vars.HF_SPACE_ID || 'hansi12/Resin' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sync_upstream) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Resinat/Resin.git 2>/dev/null || git remote set-url upstream https://github.com/Resinat/Resin.git
+          git fetch upstream master
+          git merge --no-edit upstream/master
+          if ! git diff --quiet origin/${GITHUB_REF_NAME}..HEAD; then
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+
+      - name: Prepare Hugging Face Space bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/prepare-hf-space.py --source . --output "$RUNNER_TEMP/hf-space-dist"
+          sed -n '1,32p' "$RUNNER_TEMP/hf-space-dist/README.md"
+
+      - name: Install Hugging Face CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "huggingface_hub[hf_xet]" hf
+          hf version
+
+      - name: Upload Space source
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          hf upload "$HF_SPACE_ID" "$RUNNER_TEMP/hf-space-dist" . \
+            --repo-type=space \
+            --delete="*" \
+            --commit-message="Deploy Resin from GitHub Actions"
+
+      - name: Restart Space
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi()
+          runtime = api.restart_space(os.environ["HF_SPACE_ID"], factory_reboot=True)
+          print(runtime)
+          PY
