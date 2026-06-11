@@ -12,7 +12,8 @@ on:
         default: true
         type: boolean
   schedule:
-    - cron: "0 20 * * 0"
+    - cron: "0 3 * * *"
+      timezone: "Asia/Shanghai"
 
 permissions:
   contents: write
